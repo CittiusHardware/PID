@@ -1,0 +1,8 @@
+Mantenha nesta pasta os arquivos de fontes existentes:
+
+font6.py
+font10.py
+font16b.py
+freesans20.py
+mont12h.py
+mont18h.py

@@ -1,0 +1,15 @@
+Esta pasta é o destino dos módulos de ícones já existentes.
+
+Copie ou mantenha aqui:
+
+expression_picture.py
+eye_picture.py
+icons_menu.py
+icons_mihu.py
+informatio_picture.py
+object_picture.py
+progres_picture.py
+
+O pacote não inclui esses arquivos porque eles não foram enviados
+nesta conversa. Ao instalar, mescle esta pasta com a pasta icons
+que já existe na placa.
