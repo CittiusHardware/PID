@@ -11,15 +11,26 @@ BRAKED = 3
 posicao_atual = m1.read()
 
 # VALORES PID
-kp_velocidade = 0.1
+kp = 0.1
+ki = 0.01
+kd = 0.0
 
 # --------------------- VARIAVEIS --------------------- #
 estado = 0
 
+P = 0
+I = 0
+D = 0
+
+erro_anterior = 0
+contador_debug = 0
+
+fator_antecipacao = 1.5
+
 posicao = []
 tempo = []
 
-posicao_alvo = 480
+posicao_alvo = 620
 margem_distancia_alvo = 100
 
 amostras_longe = 15
@@ -31,6 +42,10 @@ velocidade_max = 800
 
 pwm_atual = 0
 stepup_inicializado = False
+stepdown_inicializado = False
+
+posicao_inicial_stepdown = 0
+distancia_stepdown = 0
 
 # --------------------- Funções Auxiliares --------------------- #
 def atualizar_encoder():
@@ -157,7 +172,7 @@ def executar_run():
 #     elif velocidade_ev3 < -100:
 #         velocidade_ev3 = -100
         
-    posicao_prevista = posicao_atual + (velocidade_ev3 / 2)
+    posicao_prevista = posicao_atual + (velocidade_ev3 * fator_antecipacao)
     
     if direcao > 0:
         if posicao_prevista  >= posicao_alvo:
@@ -168,86 +183,211 @@ def executar_run():
             estado = STEPDOWN
             return
 
-#     # Equivalente ao GetCompareCounts() do EV3
-#     antecipacao = abs(velocidade_ev3) / 2
-#     
-# 
-#     # Verifica se já chegou na região de desaceleração
-#     if abs(distancia_restante) <= antecipacao:
-#         estado = STEPDOWN
-#         return
-
     # RUN: mantém velocidade constante
     velocidade_desejada = velocidade_max * direcao
+
 
 def executar_stepdown():
     global estado
     global velocidade_desejada
-    global velocidade_atual
 
-    distancia_restante = posicao_alvo - posicao_atual
+    global stepdown_inicializado
+    global posicao_inicial_stepdown
+    global distancia_stepdown
 
-    velocidade_ev3_desejada = distancia_restante
+    if not stepdown_inicializado:
 
-    # EV3 trabalha com velocidade entre -100 e +100
-    if velocidade_ev3_desejada > 100:
-        velocidade_ev3_desejada = 100
+        posicao_inicial_stepdown = posicao_atual
 
-    elif velocidade_ev3_desejada < -100:
-        velocidade_ev3_desejada = -100
+        distancia_stepdown = (posicao_alvo - posicao_atual) * direcao
 
-    # Velocidade atual convertida para escala EV3
-    velocidade_ev3_atual = (velocidade_atual / velocidade_max) * 100
+        # Se já chegou/passou do alvo
+        if distancia_stepdown <= 0:
+            velocidade_desejada = 0
+            estado = BRAKED
+            executar_brake()
+            return
 
-    if velocidade_ev3_atual > 100:
-        velocidade_ev3_atual = 100
+        stepdown_inicializado = True
 
-    elif velocidade_ev3_atual < -100:
-        velocidade_ev3_atual = -100
-        
-    # Se ainda estamos acima de 5 e o motor está mais
-    # rápido que o TargetSpeed, LEGO força TargetSpeed = 1
-    if abs(velocidade_ev3_desejada) > 5:
-        if (velocidade_ev3_desejada * direcao < velocidade_ev3_atual * direcao):
-            velocidade_ev3_desejada = 1 * direcao
-            
-    # Volta da escala EV3 para nossa velocidade real
-    velocidade_desejada = (velocidade_ev3_desejada / 100) * velocidade_max
+    distancia_restante = (posicao_alvo - posicao_atual) * direcao
+
+    # Chegou ou passou do alvo
+    if distancia_restante <= 0:
+        velocidade_desejada = 0
+        stepdown_inicializado = False
+        estado = BRAKED
+        executar_brake()
+        return
+
+    # RAMPA DE DESACELERAÇÃO
+    fator_restante = (distancia_restante / distancia_stepdown)
+
+    # Segurança
+    if fator_restante > 1:
+        fator_restante = 1
+
+    elif fator_restante < 0:
+        fator_restante = 0
+
+    # VELOCIDADE DESEJADA
+    velocidade_desejada = (velocidade_max * fator_restante * direcao)
     
-    if direcao > 0:
-        if posicao_atual >= posicao_alvo:
-            velocidade_desejada = 0
-            estado = BRAKED
-            return
+    # VELOCIDADE MÍNIMA
+    velocidade_minima = (velocidade_max * 0.01)
+
+    if abs(velocidade_desejada) < velocidade_minima:
+        velocidade_desejada = (velocidade_minima * direcao)
         
-    else:
-        if posicao_atual <= posicao_alvo:
-            velocidade_desejada = 0
-            estado = BRAKED
-            return
+# def executar_stepdown():
+#     global estado
+#     global velocidade_desejada
+#     global velocidade_atual
+#     
+#     global stepdown_inicializado
+#     global posicao_inicial_stepdown
+#     global distancia_stepdown
+#     
+#     if not stepdown_inicializado:
+#         posicao_inicial_stepdown = posicao_atual
+#         
+#         distancia_stepdown = abs(posicao_alvo - posicao_atual)
+#         
+#         if distancia_stepdown <= 0:
+#             velocidade_desejada = 0
+#             estado = BRAKED
+#             executar_brake()
+#             return
+#         
+#         stepdown_inicializado = True
+#         
+#         if direcao > 0:
+#             if posicao_atual >= posicao_alvo:
+#                 velocidade_desejada = 0
+#                 stepdown_inicializado = False
+#                 estado = BRAKED
+#                 executar_brake()
+#                 return
+#             
+#         else:
+#             if posicao_atual <= posicao_alvo:
+#                 velocidade_desejada = 0
+#                 stepdown_inicializado = False
+#                 estado = BRAKED
+#                 executar_brake()
+#                 return
+# 
+#         distancia_restante = abs(posicao_alvo - posicao_atual)
+#         
+#         # Fator de desaceleração
+#         fator_restante = (distancia_restante / distancia_stepdown)
+#         
+#         if fator_restante > 1:
+#             fator_restante = 1
+#         elif fator_restante < 0:
+#             fator_restante = 0
+# 
+#         # TargetSpeed
+#         velocidade_desejada = (velocidade_max * fator_restante * direcao)
+# 
+#         # Velocidade mínima enquanto ainda está andando
+#         velocidade_minima = (velocidade_max * 0.01)
+# 
+#         if abs(velocidade_desejada) < velocidade_minima:
+#             velocidade_desejada = (velocidade_minima * direcao)
+        
+        
+        
+#     velocidade_ev3_desejada = distancia_restante
+# 
+#     # EV3 trabalha com velocidade entre -100 e +100
+#     if velocidade_ev3_desejada > 100:
+#         velocidade_ev3_desejada = 100
+# 
+#     elif velocidade_ev3_desejada < -100:
+#         velocidade_ev3_desejada = -100
+# 
+#     # Velocidade atual convertida para escala EV3
+#     velocidade_ev3_atual = (velocidade_atual / velocidade_max) * 100
+# 
+#     if velocidade_ev3_atual > 100:
+#         velocidade_ev3_atual = 100
+# 
+#     elif velocidade_ev3_atual < -100:
+#         velocidade_ev3_atual = -100
+#         
+#     # Se ainda estamos acima de 5 e o motor está mais
+#     # rápido que o TargetSpeed, LEGO força TargetSpeed = 1
+#     if abs(velocidade_ev3_desejada) > 5:
+#         if (velocidade_ev3_desejada * direcao < velocidade_ev3_atual * direcao):
+#             velocidade_ev3_desejada = 1 * direcao
+#             
+#     # Volta da escala EV3 para nossa velocidade real
+#     velocidade_desejada = (velocidade_ev3_desejada / 100) * velocidade_max
+#     
+#     if direcao > 0:
+#         if posicao_atual >= posicao_alvo:
+#             velocidade_desejada = 0
+#             estado = BRAKED
+#             executar_brake()
+#             return
+#         
+#     else:
+#         if posicao_atual <= posicao_alvo:
+#             velocidade_desejada = 0
+#             estado = BRAKED
+#             executar_brake()
+#             return
 
 
 def executar_brake():
-    print("Estado", estado,
-        "Pos:", posicao_atual,
-        "VelDesejada:", velocidade_desejada,
-        "Vel:", velocidade_atual,
-        "PWM:", pwm_atual
-    )
+    global pwm_atual
+
     m1.brake()
+    pwm_atual = 0
     
     
 def regular_velocidade():
     global pwm_atual
+    global P
+    global I
+    global D
+    global erro_anterior
+    
+    # CONVERTE PARA ESCALA EV3 (-100 +100)
+    velocidade_desejada_ev3 = (velocidade_desejada / velocidade_max) * 100
+    velocidade_atual_ev3 = (velocidade_atual / velocidade_max) * 100
+
+    # Limita TargetSpeed
+    if velocidade_desejada_ev3 > 100:
+        velocidade_desejada_ev3 = 100
+
+    elif velocidade_desejada_ev3 < -100:
+        velocidade_desejada_ev3 = -100
     
     # REGULADOR DE VELOCIDADE
-    erro_velocidade = (velocidade_desejada - velocidade_atual)
+    erro_velocidade = (velocidade_desejada_ev3 - velocidade_atual_ev3)
 
     # Proporcional 
-    P = (erro_velocidade * kp_velocidade)
+    P = (erro_velocidade * kp)
+    
+    # Integral
+    I = (I * 0.9) + (erro_velocidade * ki)
+    
+    # Limite da integral
+    if I > 100:
+        I = 100
+    elif I < -100:
+        I = -100
+    
+    # Derivada
+    D = (erro_velocidade - erro_anterior) * kd
+    
+    # Guarda erro
+    erro_anterior = erro_velocidade
 
     # Controle incremental
-    pwm_atual += P
+    pwm_atual = pwm_atual + P + I + D
 
     # SATURAÇÃO
     if pwm_atual > 4095:
@@ -265,21 +405,26 @@ def regular_velocidade():
 
     # MOTOR
     m1.pwm(int(pwm_atual))
-
-    print("Estado", estado,
-        "Pos:", posicao_atual,
-        "VelDesejada:", velocidade_desejada,
-        "Vel:", velocidade_atual,
-        "PWM:", pwm_atual
-    )
     
 # --------------------- Função Principal --------------------- #
 while True:
     atualizar_encoder()
+    
+    contador_debug += 1
 
-    estado_anterior = estado
-
-    # Atualiza o estado e calcula velocidade_desejada
+    if contador_debug >= 25:
+        contador_debug = 0
+        print(
+            "Estado", estado,
+            "Pos:", posicao_atual,
+            "VD:", velocidade_desejada,
+            "V:", velocidade_atual,
+            "P:", P,
+            "I:", I,
+            "D:", D,
+            "PWM:", pwm_atual
+        )
+        
     if estado == STEPUP:
         executar_stepup()
 
@@ -290,17 +435,10 @@ while True:
         executar_stepdown()
 
     elif estado == BRAKED:
-        
         executar_brake()
 
-    # Se houve mudança de estado, não utiliza a velocidade_desejada do estado anterior
-    if estado != estado_anterior:
-        sleep_ms(10)
-        continue
-
-    # Estados que utilizam controle de velocidade
     if estado == STEPUP or estado == RUN or estado == STEPDOWN:
         regular_velocidade()
 
-    sleep_ms(10)
+    sleep_ms(2)
 
