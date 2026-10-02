@@ -4,7 +4,7 @@ Leitura dos quatro encoders quadratura da MIHU-S3.
 Os oito GPIOs são configurados com PULL_UP somente na primeira
 leitura ou limpeza de encoder.
 """
-
+from time import ticks_us
 from machine import Pin
 import machine
 
@@ -13,7 +13,6 @@ try:
     from mihuPinMap import ENCODER_PINS
 except ImportError:
     from lib.mihuPinMap import ENCODER_PINS
-
 
 M1, M2, M3, M4 = 1, 2, 3, 4
 
@@ -26,6 +25,44 @@ _encoder_count = {
 }
 
 _encoder_last_state = {
+    M1: 0,
+    M2: 0,
+    M3: 0,
+    M4: 0,
+}
+
+_encoder_last_time = {
+    M1: 0,
+    M2: 0,
+    M3: 0,
+    M4: 0,
+}
+
+_ENCODER_HISTORY_SIZE = 128
+_ENCODER_HISTORY_MASK = 127
+
+_encoder_tacho_time = {
+    M1: [0] * _ENCODER_HISTORY_SIZE,
+    M2: [0] * _ENCODER_HISTORY_SIZE,
+    M3: [0] * _ENCODER_HISTORY_SIZE,
+    M4: [0] * _ENCODER_HISTORY_SIZE,
+}
+
+_encoder_tacho_ptr = {
+    M1: 0,
+    M2: 0,
+    M3: 0,
+    M4: 0,
+}
+
+_encoder_tacho_valid = {
+    M1: 0,
+    M2: 0,
+    M3: 0,
+    M4: 0,
+}
+
+_encoder_last_step = {
     M1: 0,
     M2: 0,
     M3: 0,
@@ -49,32 +86,28 @@ _TRANSITIONS = (
      0, -1,  1,  0,
 )
 
+def _clear_tacho_history(motor_id):
 
+    _encoder_tacho_ptr[motor_id] = 0
+    _encoder_tacho_valid[motor_id] = 0
+    _encoder_last_step[motor_id] = 0
+    
+    
 def _norm_motor_id(motor_id):
     if isinstance(motor_id, str):
         text = motor_id.strip().upper()
 
-        if (
-            len(text) == 2
-            and text[0] == "M"
-            and text[1] in "1234"
-        ):
+        if (len(text) == 2 and text[0] == "M" and text[1] in "1234"):
             return int(text[1])
 
-        raise ValueError(
-            "Motor invalido: {}".format(
-                motor_id
-            )
-        )
+        raise ValueError("Motor invalido: {}".format(motor_id))
 
     motor_id = int(motor_id)
 
     if 1 <= motor_id <= 4:
         return motor_id
 
-    raise ValueError(
-        "Use M1, M2, M3, M4 ou 1..4."
-    )
+    raise ValueError("Use M1, M2, M3, M4 ou 1..4.")
 
 
 def _normalized_pin_map():
@@ -90,38 +123,40 @@ def _normalized_pin_map():
 
 
 def _read_state(pin_a, pin_b):
-    return (
-        (pin_a.value() << 1)
-        | pin_b.value()
-    )
+    return ((pin_a.value() << 1) | pin_b.value())
 
 
 def _make_irq_handler(motor_id):
     def _irq(_pin):
-        pin_a, pin_b = _encoder_pins[
-            motor_id
-        ]
+        
+        agora = ticks_us()
+        
+        pin_a, pin_b = _encoder_pins[motor_id]
+        current_state = _read_state(pin_a, pin_b, )
+        
+        last_state = _encoder_last_state[motor_id]
+        transition = (last_state << 2) | current_state
+        
+        step = _TRANSITIONS[transition]
+        
+        if step != 0:
+            if (_encoder_last_step[motor_id] != 0 and step != _encoder_last_step[motor_id]):
+                _encoder_tacho_ptr[motor_id] = 0
+                _encoder_tacho_valid[motor_id] = 0
+                
+            _encoder_count[motor_id] += step
+            _encoder_last_time[motor_id] = agora
+            _encoder_last_step[motor_id] = step
 
-        current_state = _read_state(
-            pin_a,
-            pin_b,
-        )
+            ptr = (_encoder_tacho_ptr[motor_id] + 1) & _ENCODER_HISTORY_MASK
 
-        last_state = _encoder_last_state[
-            motor_id
-        ]
+            _encoder_tacho_time[motor_id][ptr] = agora
+            _encoder_tacho_ptr[motor_id] = ptr
 
-        transition = (
-            last_state << 2
-        ) | current_state
-
-        _encoder_count[motor_id] += (
-            _TRANSITIONS[transition]
-        )
-
-        _encoder_last_state[
-            motor_id
-        ] = current_state
+            if (_encoder_tacho_valid[motor_id] < _ENCODER_HISTORY_SIZE):
+                _encoder_tacho_valid[motor_id] += 1
+                    
+        _encoder_last_state[motor_id] = current_state
 
     return _irq
 
@@ -253,34 +288,40 @@ def getEncoder(motor_id):
             irq_state
         )
 
-
-def setEncoder(motor_id, value):
-    motor_id = _norm_motor_id(
-        motor_id
-    )
+def getEncoderSnapshot(motor_id):
+    motor_id = _norm_motor_id(motor_id)
 
     _ensure_encoder()
 
     irq_state = machine.disable_irq()
 
     try:
-        _encoder_count[motor_id] = int(
-            value
-        )
+        return (int(_encoder_count[motor_id]), int(_encoder_last_time[motor_id]),)
 
     finally:
-        machine.enable_irq(
-            irq_state
-        )
+        machine.enable_irq(irq_state)
+        
+        
+def setEncoder(motor_id, value):
+    motor_id = _norm_motor_id(motor_id)
+
+    _ensure_encoder()
+
+    irq_state = machine.disable_irq()
+
+    try:
+        _encoder_count[motor_id] = int(value)
+        _encoder_last_time[motor_id] = 0
+        _clear_tacho_history(motor_id)
+        
+    finally:
+        machine.enable_irq(irq_state)
 
     return int(value)
 
 
 def clearEncoder(motor_id):
-    return setEncoder(
-        motor_id,
-        0,
-    )
+    return setEncoder(motor_id, 0,)
 
 
 def getAllEncoders():
@@ -297,9 +338,7 @@ def getAllEncoders():
         )
 
     finally:
-        machine.enable_irq(
-            irq_state
-        )
+        machine.enable_irq(irq_state)
 
 
 def clearAllEncoders():
@@ -315,11 +354,11 @@ def clearAllEncoders():
             M4,
         ):
             _encoder_count[motor_id] = 0
-
+            _encoder_last_time[motor_id] = 0
+            _clear_tacho_history(motor_id)
+            
     finally:
-        machine.enable_irq(
-            irq_state
-        )
+        machine.enable_irq(irq_state)
 
     return True
 

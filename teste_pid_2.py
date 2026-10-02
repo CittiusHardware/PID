@@ -16,15 +16,15 @@ posicao_anterior = posicao_inicial
 distancia_total = abs(deslocamento_alvo)
 
 # DIVISÃO DOS PASSOS DO PID
-rampa_stepup = distancia_total * 0.15 		# Reservando 10% da trajetoria para a rampa de aceleração
-rampa_stepdown = distancia_total * 0.25 	# Reservando 16.7% da trajetoria para a rampa de desaceleração
+rampa_stepup = distancia_total * 0.10 		# Reservando 10% da trajetoria para a rampa de aceleração
+rampa_stepdown = distancia_total * 0.20 	# Reservando 16.7% da trajetoria para a rampa de desaceleração
 distancia_run = distancia_total - (rampa_stepup + rampa_stepdown)
 
 # VALORES PID
 kp_brake = 150
-kp = 0.1
-ki = 0.01
-kd = 0.05
+kp = 0.05
+ki = 0.0
+kd = 0.1
 
 # Direção original do movimento
 if posicao_alvo > posicao_inicial:
@@ -257,19 +257,19 @@ def executar_run():
     global velocidade_desejada
     
     deslocamento_total = (posicao_atual - posicao_inicial) * direcao
-    
-    inicio_stepdown = rampa_stepup + distancia_run
+#     
+#     inicio_stepdown = rampa_stepup + distancia_run
 #     ----------- 1 opção de lógica -----------       
-    if deslocamento_total >= inicio_stepdown:
-        limpar_pid()
-        estado = STEPDOWN
-        return
-#     ----------- 2 opção de lógica -----------       
-#     deslocamento_previsto = (deslocamento_total + abs(vel_normalizada_atual / 2))
-#     if deslocamento_previsto >= distancia_total:
+#     if deslocamento_total >= inicio_stepdown:
 #         limpar_pid()
 #         estado = STEPDOWN
 #         return
+#     ----------- 2 opção de lógica -----------       
+    deslocamento_previsto = (deslocamento_total + abs(vel_normalizada_atual / 2))
+    if deslocamento_previsto >= distancia_total:
+        limpar_pid()
+        estado = STEPDOWN
+        return
 
     # RUN: mantém velocidade desejada constante
     velocidade_desejada = velocidade_max * direcao
@@ -289,7 +289,8 @@ def executar_stepdown():
     if not stepdown_inicializado:
 #     ----------- 1 opção de lógica -----------       
         # Posição onde começou a rampa de desaceleração
-        posicao_inicial_stepdown = posicao_inicial + (direcao * (distancia_total - rampa_stepdown))
+#         posicao_inicial_stepdown = posicao_inicial + (direcao * (distancia_total - rampa_stepdown))
+        posicao_inicial_stepdown = posicao_atual
 
         # Velocidade desejada no momento em que começa o STEP_DOWN
         rampa_down_offset = abs(velocidade_atual) * direcao
@@ -305,12 +306,12 @@ def executar_stepdown():
     deslocamento = (posicao_atual - posicao_inicial_stepdown) * direcao
 
     if deslocamento < rampa_stepdown:
-        
-        nova_velocidade = (rampa_down_offset + (deslocamento * rampa_down_factor) / 1000)
-        velocidade_minima = (velocidade_escala_100 * 0.04) # Velocidade mínima enquanto ainda não terminou a rampa
+        if(velocidade_atual > 0):
+            nova_velocidade = (rampa_down_offset + (deslocamento * rampa_down_factor) / 1000)
+            velocidade_minima = (velocidade_escala_100 * 0.04) # Velocidade mínima enquanto ainda não terminou a rampa
 
-        if abs(nova_velocidade) > velocidade_minima:
-            velocidade_desejada = nova_velocidade
+            if abs(nova_velocidade) > velocidade_minima:
+                velocidade_desejada = nova_velocidade
             
 #     ----------- 2 opção de lógica -----------       
 #         erro_posicao = posicao_alvo - posicao_atual
@@ -431,21 +432,12 @@ def debug_controle():
     agora = ticks_us()
 
     mudou_estado = (estado != estado_anterior_debug)
-    passou_tempo = (
-        ticks_diff(agora, ultimo_debug_us)
-        >= intervalo_debug_us
-    )
+    passou_tempo = (ticks_diff(agora, ultimo_debug_us) >= intervalo_debug_us)
 
-
-    # =====================================================
-    # STEPUP / RUN / STEPDOWN
     # Continua armazenando o debug normalmente
-    # =====================================================
-
     if estado != BRAKED:
 
-        # Só grava quando muda de estado
-        # ou quando passa o intervalo do debug
+        # Só grava quando muda de estado ou quando passa o intervalo do debug
         if not mudou_estado and not passou_tempo:
             return
 
@@ -454,30 +446,13 @@ def debug_controle():
 
         if len(log_debug) < max_log_debug:
 
-            log_debug.append(
-                (
-                    estado,
-                    posicao_atual,
-                    distancia_restante,
-                    velocidade_atual,
-                    velocidade_desejada,
-                    vel_normalizada_atual,
-                    vel_normalizada_desejada,
-                    amostras_atuais,
-                    P,
-                    I,
-                    D,
-                    pwm
-                )
-            )
+            log_debug.append((estado, posicao_atual, distancia_restante, velocidade_atual, velocidade_desejada,
+                              amostras_atuais, P, I, D, rampa_down_offset, rampa_down_factor, pwm))
 
         return
 
 
-    # =====================================================
     # ENTROU NO BRAKED
-    # =====================================================
-
     if braked_inicio_us is None:
 
         braked_inicio_us = agora
@@ -496,19 +471,11 @@ def debug_controle():
             "| Erro:", erro_brake,
             "| PWM:", pwm,
             "| V:", velocidade_atual,
-            "| Avanco:",
-            posicao_atual - posicao_braked_inicial
+            "| Avanco:", posicao_atual - posicao_braked_inicial
         )
 
-    # =====================================================
     # OBSERVA O MOTOR DURANTE O BRAKED
-    # =====================================================
-
-    if ticks_diff(
-        agora,
-        ultimo_debug_us
-    ) >= intervalo_debug_us:
-
+    if ticks_diff(agora, ultimo_debug_us) >= intervalo_debug_us:
         ultimo_debug_us = agora
 
         print(
@@ -516,107 +483,47 @@ def debug_controle():
             "| Pos:", posicao_atual,
             "| Raw:", m1.read(),
             "| V:", velocidade_atual,
-            "| Avanco:",
-            posicao_atual - posicao_braked_inicial
+            "| Avanco:", posicao_atual - posicao_braked_inicial
         )
 
 
-    # =====================================================
     # AINDA NÃO PASSARAM 500 ms
-    # =====================================================
-
-    if ticks_diff(
-        agora,
-        braked_inicio_us
-    ) < 500_000:
-
+    if ticks_diff(agora, braked_inicio_us) < 500_000:
         return
 
-
-    # =====================================================
     # PASSARAM 500 ms
-    # AGORA SIM FINALIZA O DEBUG
-    # =====================================================
-
     debug_impresso = True
-
     posicao_final_real = m1.read()
 
-    nomes = (
-        "STEPUP",
-        "RUN",
-        "STEPDOWN",
-        "BRAKED"
-    )
+    nomes = ("STEPUP","RUN", "STEPDOWN", "BRAKED")
 
     print()
     print("========== DEBUG CONTROLE ==========")
-
     print("Alvo:", posicao_alvo)
-
-    print(
-        "Posicao ao entrar BRAKED:",
-        posicao_braked_inicial
-    )
-
-    print(
-        "Posicao apos 500 ms:",
-        posicao_final_real
-    )
-
-    print(
-        "Avanco apos BRAKED:",
-        posicao_final_real
-        - posicao_braked_inicial
-    )
-
-    print(
-        "Erro final real:",
-        posicao_alvo
-        - posicao_final_real
-    )
-
-    print(
-        "Registros:",
-        len(log_debug)
-    )
-
+    print("Posicao ao entrar BRAKED:", posicao_braked_inicial)
+    print("Posicao apos 500 ms:", posicao_final_real)
+    print("Avanco apos BRAKED:", posicao_final_real - posicao_braked_inicial)
+    print("Erro final real:", posicao_alvo - posicao_final_real)
+    print("Registros:", len(log_debug))
     print()
 
-
-    # =====================================================
     # IMPRIME O HISTÓRICO DO MOVIMENTO
-    # =====================================================
-
     for dados in log_debug:
-
-        (
-            estado_log,
-            pos_log,
-            rest_log,
-            v_log,
-            vd_log,
-            vn_log,
-            vnd_log,
-            amostras_log,
-            p_log,
-            i_log,
-            d_log,
-            pwm_log
-        ) = dados
-
+        (estado_log, pos_log, rest_log, v_log, vd_log, amostras_log,
+         p_log, i_log, d_log, rd_offset, rd_factor, pwm_log) = dados
+        
         print(
             nomes[estado_log],
             "| Pos:", pos_log,
             "| Rest:", rest_log,
             "| V:", v_log,
             "| VD:", vd_log,
-            "| Vn:", vn_log,
-            "| VnD:", vnd_log,
             "| Amostras:", amostras_log,
             "| P:", p_log,
             "| I:", i_log,
             "| D:", d_log,
+            "| Offset:", rd_offset,
+            "| Factor:", rd_factor,
             "| PWM:", pwm_log
         )
 
